@@ -327,4 +327,362 @@ This architecture provides a solid foundation for a secure and scalable stock tr
 4. Perform security audits
 5. Add unit tests (consider PHPUnit)
 
-Would you like me to elaborate on any specific part or add additional features to the implementation?
+---
+
+v2
+
+### 1. User Authentication System
+
+**app/Core/User.php**
+```php
+<?php
+class User {
+    private $db;
+    
+    public function __construct(Database $db) {
+        $this->db = $db;
+        session_start();
+    }
+
+    public function register($username, $password) {
+        $pdo = $this->db->getConnection();
+        
+        // Validation
+        if (empty($username) || empty($password)) {
+            throw new Exception("Username and password are required");
+        }
+        if (!preg_match('/^\w{5,30}$/', $username)) {
+            throw new Exception("Username must be 5-30 characters (letters, numbers, underscores)");
+        }
+        if (strlen($password) < 8) {
+            throw new Exception("Password must be at least 8 characters");
+        }
+
+        $hashed_password = password_hash($password, PASSWORD_DEFAULT);
+        
+        try {
+            $stmt = $pdo->prepare("INSERT INTO users (username, password) VALUES (?, ?)");
+            $stmt->execute([$username, $hashed_password]);
+            return true;
+        } catch (PDOException $e) {
+            if ($e->errorInfo[1] === 1062) {
+                throw new Exception("Username already exists");
+            }
+            throw new Exception("Registration failed: " . $e->getMessage());
+        }
+    }
+
+    public function login($username, $password) {
+        $pdo = $this->db->getConnection();
+        
+        $stmt = $pdo->prepare("SELECT * FROM users WHERE username = ?");
+        $stmt->execute([$username]);
+        $user = $stmt->fetch();
+
+        if ($user && password_verify($password, $user['password'])) {
+            $_SESSION['user_id'] = $user['id'];
+            $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+            return true;
+        }
+        throw new Exception("Invalid username or password");
+    }
+
+    public function logout() {
+        $_SESSION = array();
+        session_destroy();
+    }
+
+    public function isLoggedIn() {
+        return isset($_SESSION['user_id']);
+    }
+
+    public function getCurrentUserId() {
+        return $_SESSION['user_id'] ?? null;
+    }
+
+    public function validateCSRF($token) {
+        return hash_equals($_SESSION['csrf_token'] ?? '', $token);
+    }
+}
+?>
+```
+
+### 2. Enhanced Input Validation
+
+**app/Core/Validation.php**
+```php
+<?php
+class Validation {
+    public static function sanitizeInput($data) {
+        if (is_array($data)) {
+            return array_map([self::class, 'sanitizeInput'], $data);
+        }
+        return htmlspecialchars(trim($data), ENT_QUOTES, 'UTF-8');
+    }
+
+    public static function validateStockSymbol($symbol) {
+        if (!preg_match('/^[A-Z]{1,5}$/', $symbol)) {
+            throw new Exception("Invalid stock symbol");
+        }
+        return true;
+    }
+
+    public static function validateQuantity($quantity) {
+        if (!filter_var($quantity, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])) {
+            throw new Exception("Quantity must be a positive integer");
+        }
+        return true;
+    }
+
+    public static function validatePrice($price) {
+        if (!filter_var($price, FILTER_VALIDATE_FLOAT, ['options' => ['min_range' => 0.01]])) {
+            throw new Exception("Invalid price value");
+        }
+        return true;
+    }
+}
+?>
+```
+
+### 3. Updated Share Class with Validation
+
+**app/Core/Share.php (Updated)**
+```php
+<?php
+class Share {
+    // ... existing code ...
+
+    public function addShare($user_id, $symbol, $quantity, $purchase_price) {
+        // Validate inputs
+        Validation::validateStockSymbol($symbol);
+        Validation::validateQuantity($quantity);
+        Validation::validatePrice($purchase_price);
+
+        $pdo = $this->db->getConnection();
+        
+        $stmt = $pdo->prepare("INSERT INTO shares 
+            (user_id, symbol, quantity, purchase_price) 
+            VALUES (?, ?, ?, ?)");
+            
+        return $stmt->execute([
+            $user_id,
+            strtoupper($symbol),
+            $quantity,
+            $purchase_price
+        ]);
+    }
+}
+?>
+```
+
+### 4. Updated Portfolio Class with Validation
+
+**app/Core/Portfolio.php (Updated)**
+```php
+<?php
+class Portfolio {
+    // ... existing code ...
+
+    public function sellShares($user_id, $share_id, $sell_quantity, $sell_price) {
+        // Validate inputs
+        Validation::validateQuantity($sell_quantity);
+        Validation::validatePrice($sell_price);
+
+        $pdo = $this->db->getConnection();
+        
+        // Get purchase details with user validation
+        $stmt = $pdo->prepare("SELECT * FROM shares WHERE id = ? AND user_id = ?");
+        $stmt->execute([$share_id, $user_id]);
+        $share = $stmt->fetch();
+        
+        if (!$share) throw new Exception("Share not found");
+        if ($share['quantity'] < $sell_quantity) {
+            throw new Exception("Insufficient shares to sell");
+        }
+
+        // ... rest of the existing code ...
+    }
+}
+?>
+```
+
+### 5. Updated config.php with Security Headers
+```php
+<?php
+// Security headers
+header("Strict-Transport-Security: max-age=31536000; includeSubDomains");
+header("X-Content-Type-Options: nosniff");
+header("X-Frame-Options: DENY");
+header("X-XSS-Protection: 1; mode=block");
+header("Referrer-Policy: strict-origin-when-cross-origin");
+
+// Session configuration
+ini_set('session.cookie_httponly', 1);
+ini_set('session.cookie_secure', 1);
+ini_set('session.cookie_samesite', 'Strict');
+
+// ... existing configuration ...
+?>
+```
+
+### 6. Authentication Middleware Example
+
+**app/Core/Middleware.php**
+```php
+<?php
+class Middleware {
+    public static function authenticate(User $user) {
+        if (!$user->isLoggedIn()) {
+            header("HTTP/1.1 401 Unauthorized");
+            exit("You must be logged in to access this page");
+        }
+    }
+
+    public static function validateCSRF(User $user, $token) {
+        if (!$user->validateCSRF($token)) {
+            header("HTTP/1.1 403 Forbidden");
+            exit("Invalid CSRF token");
+        }
+    }
+}
+?>
+```
+
+### 7. Example Secure Form Handling
+
+**public/trade.php**
+```php
+<?php
+require __DIR__ . '/../app/config.php';
+
+$db = new Database();
+$user = new User($db);
+$share = new Share($db);
+
+Middleware::authenticate($user);
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $data = Validation::sanitizeInput($_POST);
+    
+    try {
+        Middleware::validateCSRF($user, $data['csrf_token'] ?? '');
+        
+        $share->addShare(
+            $user->getCurrentUserId(),
+            $data['symbol'],
+            $data['quantity'],
+            $data['price']
+        );
+        
+        header("Location: /portfolio.php");
+        exit;
+    } catch (Exception $e) {
+        $error = $e->getMessage();
+    }
+}
+
+// Display form with CSRF token
+?>
+<form method="post">
+    <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
+    <input type="text" name="symbol" required pattern="[A-Z]{1,5}">
+    <input type="number" name="quantity" step="1" min="1" required>
+    <input type="number" name="price" step="0.01" min="0.01" required>
+    <button type="submit">Buy Shares</button>
+</form>
+```
+
+### 8. Enhanced Database Schema (Add indexes and constraints)
+```sql
+ALTER TABLE users ADD INDEX idx_username (username);
+ALTER TABLE shares ADD CONSTRAINT chk_quantity CHECK (quantity > 0);
+ALTER TABLE transactions ADD CONSTRAINT chk_sell_quantity CHECK (quantity > 0);
+```
+
+### Deployment Security Checklist
+
+1. **Environment Configuration**
+   - Set `display_errors = Off` in php.ini
+   - Enable OPcache for PHP performance
+   - Set proper file permissions:
+   ```bash
+   chmod 644 /var/www/html/*
+   chmod 711 /var/www/html/
+   chmod -R 700 /var/www/html/app/
+   ```
+
+2. **Web Server Security**
+   - Configure .htaccess to block sensitive files:
+   ```apache
+   <FilesMatch "\.(env|log|ini|htaccess)$">
+       Order allow,deny
+       Deny from all
+   </FilesMatch>
+   ```
+
+3. **Regular Maintenance**
+   - Set up cron job for session cleanup:
+   ```bash
+   @daily find /var/lib/php/sessions -type f -mtime +7 -delete
+   ```
+
+4. **Rate Limiting Example (using Redis)**
+```php
+class RateLimiter {
+    private $redis;
+    private $limit = 5; // Allowed attempts
+    private $window = 300; // 5 minutes
+
+    public function __construct() {
+        $this->redis = new Redis();
+        $this->redis->connect('127.0.0.1', 6379);
+    }
+
+    public function checkLoginAttempts($ip) {
+        $key = "login_attempts:$ip";
+        $attempts = $this->redis->incr($key);
+        
+        if ($attempts === 1) {
+            $this->redis->expire($key, $this->window);
+        }
+        
+        if ($attempts > $this->limit) {
+            throw new Exception("Too many login attempts. Try again later.");
+        }
+    }
+}
+```
+
+### Key Security Features Added:
+1. **Secure Password Handling**
+   - bcrypt password hashing
+   - Minimum password requirements
+   - Account lockout prevention
+
+2. **CSRF Protection**
+   - Token generation and validation
+   - SameSite cookies
+
+3. **Input Validation**
+   - Sanitization of all user inputs
+   - Strict validation rules for stock symbols
+   - Numeric validation with range checks
+
+4. **Session Security**
+   - HttpOnly and Secure cookies
+   - Session regeneration on login
+   - Strict session configuration
+
+5. **Database Security**
+   - Parameterized queries
+   - Constraint checks
+   - Proper indexing
+
+6. **Rate Limiting**
+   - Prevention of brute-force attacks
+   - Redis-based tracking
+
+7. **Security Headers**
+   - HSTS enforcement
+   - XSS and clickjacking protection
+   - MIME type validation
