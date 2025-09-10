@@ -14,21 +14,20 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         $hashed_password = password_hash($password, PASSWORD_DEFAULT); //PASSWORD_DEFAULT currently uses bcrypt hashing
 
 
-        // $sql = "INSERT INTO users (username, password) VALUES ($username, $password)"; -> simple but it's vulnerable, prone to sql attacks (not recommended)
-        // try {
-        //     $pdo->exec($sql);
-        //     $success = "User registered successfully!";
-        // } catch (PDOException $e) {
-        //     // If username already exists or any other error
-        //     $error = "Error: " . $e->getMessage();
-        // }
-
         // 4. Insert user into database using prepared statement to secure from sql injection attacks
-        $stmt = $pdo->prepare("INSERT INTO users (username, password) VALUES (?, ?)");
-        if ($stmt->execute([$username, $hashed_password])) {
-            $success = "User registered successfully!";
-        } else {
-            $error = "Username already exists.";
+        try {
+            $stmt = $pdo->prepare("INSERT INTO users (username, password) VALUES (?, ?)");
+            $stmt->execute([$username, $hashed_password]);
+            // Successful registration
+            header("Location: login.php");
+            exit;
+        } catch (PDOException $e) {
+            // Check if error is duplicate entry
+            if ($e->getCode() == 23000) { // 23000 = SQLSTATE code for integrity constraint violation
+                $error = "Username already exists. Please choose another.";
+            } else {
+                $error = "Database error: " . $e->getMessage();
+            }
         }
     }
 }
@@ -41,7 +40,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     <input type="password" name="password" placeholder="Password"><br>
     <button type="submit">Register</button>
 </form>
-
+<a href="login.php"> Login</a>
 <!-- 6. Show messages -->
 <?php if (isset($error)) echo "<p style='color:red;'>$error</p>"; ?>
 <?php if (isset($success)) echo "<p style='color:green;'>$success</p>"; ?>

@@ -1,5 +1,12 @@
 <?php
 session_start();           // Start PHP session to store user info
+// if (isset($_SESSION['user_id'])) {  //Redirect to dashboard if the user is already logged in
+//     header("Location: dashboard.php");
+//     exit;
+// } else {
+//     header("Location: login.php");
+//     exit;
+// }
 require_once "db.php";     // Include database connection
 
 // 1. Check if form is submitted
@@ -18,7 +25,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
         // 4. Verify password
         if ($user && password_verify($password, $user['password'])) {
-            // 5. Store user info in session
+            // 5. Store user info in session, mapping from database to php, V.Important step
             $_SESSION['user_id'] = $user['id'];
             $_SESSION['username'] = $user['username'];
             $_SESSION['role'] = $user['role'];
@@ -39,5 +46,5 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     <input type="password" name="password" placeholder="Password"><br>
     <button type="submit">Login</button>
 </form>
-
+<a href="register.php"> Register</a>
 <?php if (isset($error)) echo "<p style='color:red;'>$error</p>"; ?>
